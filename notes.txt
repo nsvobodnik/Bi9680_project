@@ -1,0 +1,3 @@
+assumption: hydrophobicity values are MCAR
+'pdb_code' column has missing values, but its value is not used for prediction
+excluded columns for prediction: uniprot, pdb_code, ?mutation?

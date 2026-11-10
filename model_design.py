@@ -122,6 +122,20 @@ def _assign_names_and_index(df: pd.DataFrame) -> pd.DataFrame:
     else:
         log.info("No missing values detected after cleaning.")
 
+    # save rows with missing values to a separate file
+    rows_with_nan = df[df.isna().any(axis=1)]
+    if not rows_with_nan.empty:
+        out_path = "missing_rows.csv"
+        rows_with_nan.to_csv(out_path, index=False)
+
+        logging.info(
+            "Found %d rows with missing values – saved to %s",
+            len(rows_with_nan),
+            out_path,
+    )
+    else:
+        logging.info("No missing values found; no extra file created.")
+
     return df
 
 
