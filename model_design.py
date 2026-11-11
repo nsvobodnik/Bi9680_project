@@ -23,6 +23,7 @@ import pandas as pd
 import seaborn as sns
 from sklearn.base import BaseEstimator
 from sklearn.compose import ColumnTransformer
+from sklearn.dummy import DummyClassifier 
 from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression
@@ -37,6 +38,8 @@ from sklearn.model_selection import (
     GridSearchCV,
     StratifiedKFold,
     train_test_split,
+    GroupKFold,
+    cross_val_score
 )
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.pipeline import Pipeline
@@ -194,6 +197,20 @@ def _make_features_and_target(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.Series
     return X, y
 
 
+# Kyte-Doolittle hydropathy index per amino acid
+_HYDRO = {"A":1.8, "C":2.5, "D":-3.5,"E":-3.5,"F":2.8,"G":-0.4,"H":-3.2,"I":4.5,"K":-3.9, "L":3.8, "M":1.9,"N":-3.5,"P":-1.6,"Q":-3.5,"R":-4.5,
+          "S":-0.8,"T":-0.7,"V":4.2, "W":-0.9,"Y":-1.3,}
+           
+def _add_mutation_features(X: pd.DataFrame)-> pd.DataFrame:
+    """Fill missing mut_hydrophobicity from the mutant amino acid (Kyte-Doolittle scale)"""
+    X = X.copy()
+    parts = X["mutation"].astype(str).str.extract(r"^([A-Z])(\d+)([A-Z])$")
+    mut = parts[2]
+    X["mut_hydrophobicity"] = pd.to_numeric(X["mut_hydrophobicity"], errors="coerce")
+    X["mut_hydrophobicity"] = X["mut_hydrophobicity"].fillna(mut.map(_HYDRO))  
+    return(X.drop(columns=["mutation"]))   # TODO: decide whether to keep "mutation" for extra features
+
+
 def _split_dataset(
     X: pd.DataFrame,
     y: pd.Series,
@@ -231,6 +248,13 @@ def _build_preprocessor() -> ColumnTransformer:
              ["protein_type", "domain"]),
         ]
     )
+
+def _baseline_model(X_train: pd.DataFrame, y_train: pd.Series, X_test: pd.DataFrame, y_test: pd.Series) -> str:
+    """ trains a DummyClassifier baseline and evaluates its accuracy by using the most frequent class """
+    baseline = DummyClassifier(strategy="most_frequent", random_state=42)
+    baseline.fit(X_train, y_train)
+    baseline_acc = baseline.score(X_test, y_test)
+    return(f"Dummy Classifier Test Accuracy (Most Frequent Class): {baseline_acc:.4f}\n")
 
 
 def _build_model_candidates() -> Dict[str, Tuple[Pipeline, Dict[str, list[object]]]]:
@@ -388,6 +412,18 @@ def _print_metrics(
             f"{metric:<24}{train_metrics[metric]:>10.4f}{test_metrics[metric]:>10.4f}"
         )
 
+def _group_check(name, estimator, X, y, groups) -> None:
+    """Evaluates accuracy of one model if whole proteins are held out.
+    
+    All mutations of one protein (identified by uniprot feature) are kept together, either 
+    all in training or all in testing. The model is tested on data it has never seen. 
+    It is repeated 5 times with different proteins held out."""
+    scores = cross_val_score(estimator, X, y, groups=groups,
+                             cv=GroupKFold(n_splits=5), scoring="accuracy")
+    log.info("Unique proteins: %d", groups.nunique())
+    log.info("%s | GroupKFold fold scores: %s", name, [round(float(s), 3) for s in scores])
+    log.info("%s | GroupKFold mean accuracy: %.4f ± %.4f", name, scores.mean(), scores.std())
+
 
 def _print_confusion_matrices(
     estimator: BaseEstimator,
@@ -448,6 +484,9 @@ def main(argv: list[str] | None = None) -> None:
 
     # -----------------------------------------------------------------------
     # 4️⃣  Feature / target preparation and train‑test split
+
+    df = _add_mutation_features(df) # adding computable missing values
+
     X, y = _make_features_and_target(df)
     X_train, X_test, y_train, y_test = _split_dataset(X, y)
     log.info(
@@ -458,6 +497,10 @@ def main(argv: list[str] | None = None) -> None:
 
     # -----------------------------------------------------------------------
     # 5️⃣  Build model candidates and run hyper‑parameter tuning
+
+    baseline_output = _baseline_model(X_train, y_train, X_test, y_test) 
+    log.info(baseline_output)
+
     candidates = _build_model_candidates()
     tuned = _tune_models(candidates, X_train, y_train)
 
@@ -468,6 +511,7 @@ def main(argv: list[str] | None = None) -> None:
     )
     log.info("Best model: %s (CV accuracy %.4f)", best_name, best_accuracy)
 
+    _group_check(best_name, best_estimator, X, y, df["uniprot"]) 
     # -----------------------------------------------------------------------
     # 7️⃣  Evaluate on train and test splits
     train_metrics = _evaluate_split(best_estimator, X_train, y_train)
