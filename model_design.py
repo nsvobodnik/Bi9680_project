@@ -180,8 +180,8 @@ def _plot_class_counts(df: pd.DataFrame, out_path: Path) -> None:
 def _make_features_and_target(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.Series]:
     """Return X (features) and y (binary target) ready for modelling.
 
-    The malignant class (Oncogenic) is encoded as ``0`` and the benign class
-    as ``1`` – exactly what the task specification requires.
+    The malignant class (Oncogenic) is encoded as **1** and the benign
+    class as **0**
     """
     feature_cols = [
         "structure",
@@ -194,7 +194,8 @@ def _make_features_and_target(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.Series
         "domain",
     ]
     X = df[feature_cols].copy()
-    y = (df["label"] == "Benign").astype(int)   # Oncogenic → 0, Benign → 1
+    # Oncogenic → 1, Benign → 0
+    y = (df["label"] == "Oncogenic").astype(int)
     return X, y
 
 
@@ -326,6 +327,7 @@ def _build_model_candidates() -> Dict[str, Tuple[Pipeline, Dict[str, list[object
     return candidates
 
 
+# ---- model_design.py (replace the old _tune_models definition) ----
 def _tune_models(
     candidates: Dict[str, Tuple[Pipeline, Dict[str, list[object]]]],
     X_train: pd.DataFrame,
@@ -333,25 +335,19 @@ def _tune_models(
     groups: pd.Series,
 ) -> Dict[str, Tuple[Pipeline, float]]:
     """
-    Run GridSearchCV for every candidate using a **group‑aware** CV splitter
-    (StratifiedGroupKFold).  All models are therefore tuned on identical
-    protein‑wise folds, preventing information leakage across mutations of the
-    same protein.
+    Run GridSearchCV for every candidate and return the best estimator + CV score.
 
-    Args:
-        candidates: Mapping name → (pipeline, param_grid).
-        X_train: Feature matrix of the training split.
-        y_train: Target vector of the training split.
-        groups: Series that identifies the protein for each row
-                (e.g. ``df["uniprot"]``).
-
-    Returns:
-        Dictionary name → (best_estimator, best_cv_accuracy).
+    The CV splitter is **StratifiedGroupKFold** so that all rows belonging to the
+    same protein (`uniprot`) stay together in either the train or the validation
+    fold.  The `groups` argument is forwarded to ``search.fit`` so the splitter
+    can enforce the grouping constraint.
     """
-    # 5‑fold, stratified by the label, but keep all rows of a protein together.
+    # 5‑fold, stratified by the label, but respecting protein groups
     cv = StratifiedGroupKFold(
-        n_splits=5, shuffle=True, random_state=42
-    )  # ← replaces the plain StratifiedKFold used before [2]
+        n_splits=5,
+        shuffle=True,
+        random_state=42,
+    )  # ← replaces the plain StratifiedKFold used before
 
     best_by_name: Dict[str, Tuple[Pipeline, float]] = {}
 
@@ -361,20 +357,16 @@ def _tune_models(
         search = GridSearchCV(
             estimator=pipeline,
             param_grid=grid,
-            scoring="accuracy",
+            scoring="roc_auc",                 # keep the probability‑based metric
             cv=cv,
             n_jobs=-1,
         )
-        # ``groups`` is forwarded so the CV splitter can enforce the protein
-        # boundaries.
+        # Forward the groups series so the CV splitter can keep proteins intact
         search.fit(X_train, y_train, groups=groups)
 
-        best_by_name[name] = (
-            search.best_estimator_,
-            float(search.best_score_),
-        )
+        best_by_name[name] = (search.best_estimator_, float(search.best_score_))
         log.info(
-            "%s – best CV accuracy: %.4f (params: %s)",
+            "%s – best CV ROC‑AUC: %.4f (params: %s)",
             name,
             search.best_score_,
             search.best_params_,
@@ -412,12 +404,14 @@ def _evaluate_split(
     X: pd.DataFrame,
     y: pd.Series,
 ) -> Dict[str, float]:
-    """Return accuracy, precision, recall and F1 for the malignant class (label 0)."""
+    """Return accuracy, precision, recall and F1 for the malignant class (label 1)."""
     preds = estimator.predict(X)
+
     acc = accuracy_score(y, preds)
-    prec = precision_score(y, preds, pos_label=0, zero_division=0)
-    rec = recall_score(y, preds, pos_label=0, zero_division=0)
-    f1 = f1_score(y, preds, pos_label=0, zero_division=0)
+    prec = precision_score(y, preds, pos_label=1, zero_division=0)
+    rec = recall_score(y, preds, pos_label=1, zero_division=0)
+    f1 = f1_score(y, preds, pos_label=1, zero_division=0)
+
     return {
         "accuracy": acc,
         "precision (malignant)": prec,
@@ -539,7 +533,9 @@ def main(argv: list[str] | None = None) -> None:
     best_name, (best_estimator, best_accuracy) = max(
         tuned.items(), key=lambda item: item[1][1]
     )
-    log.info("Best model: %s (CV accuracy %.4f)", best_name, best_accuracy)
+    
+    best_cv_metric = tuned[best_name][1]          # already the ROC‑AUC (or PR‑AUC)
+    log.info("Best model %s – CV %s: %.4f", best_name, "ROC‑AUC", best_cv_metric)
 
     _group_check(best_name, best_estimator, X, y, df["uniprot"]) 
     # -----------------------------------------------------------------------
