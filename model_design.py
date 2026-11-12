@@ -46,6 +46,7 @@ from sklearn.neighbors import KNeighborsClassifier
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from sklearn.svm import SVC
+from sklearn.neural_network import MLPClassifier
 
 # ---------------------------------------------------------------------------
 
@@ -312,6 +313,22 @@ def _build_model_candidates() -> Dict[str, Tuple[Pipeline, Dict[str, list[object
                 "classifier__class_weight": [None, "balanced"],
             },
         ),
+        "mlp_neural_network": (
+            Pipeline([
+                ("preprocess", preproc),
+                ("classifier", MLPClassifier(
+                    random_state=42,
+                    early_stopping=True,   # stop when validation score stops improving
+                )),
+            ]),
+            {
+                "classifier__hidden_layer_sizes": [(50,), (100,), (50, 50)],
+                "classifier__alpha": [1e-4, 1e-3],
+                "classifier__learning_rate_init": [1e-3, 1e-2],
+                "classifier__max_iter": [200, 500],
+                "classifier__batch_size": ["auto"],   # keep default behavior
+            },
+        ),
         "knn": (
             Pipeline([
                 ("preprocess", preproc),
@@ -379,22 +396,34 @@ def _plot_cv_accuracies(
     results: Dict[str, Tuple[Pipeline, float]],
     out_path: Path,
 ) -> None:
-    """Bar chart of the CV accuracies of all five models."""
+    """Bar chart of the CV accuracies of all models."""
     names = list(results.keys())
     scores = [acc for _, acc in results.values()]
 
-    plt.figure(figsize=(8, 5))
+    # Make the figure wider – 10 inches wide, 5 inches tall (adjust as needed)
+    plt.figure(figsize=(10, 5))
+
     bars = plt.bar(names, scores, color="#55a868")
     plt.ylim(0.0, 1.0)
     plt.ylabel("Best CV accuracy")
     plt.title("Cross‑validated accuracy per model")
+
+    # Rotate x‑axis labels so they don’t sit on top of each other
+    plt.xticks(rotation=45, ha="right")
+
+    # Annotate each bar with its numeric value
     for bar, acc in zip(bars, scores, strict=True):
-        plt.annotate(f"{acc:.4f}",
-                     (bar.get_x() + bar.get_width() / 2, acc),
-                     ha="center", va="bottom")
+        plt.annotate(
+            f"{acc:.4f}",
+            (bar.get_x() + bar.get_width() / 2, acc),
+            ha="center",
+            va="bottom",
+        )
+
+    # Ensure nothing is cut off
     plt.tight_layout()
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    plt.savefig(out_path, dpi=150)
+    plt.savefig(str(out_path), dpi=150)
     plt.close()
     log.info("CV‑accuracy plot saved to %s", out_path)
 
