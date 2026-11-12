@@ -13,6 +13,7 @@ point.
 
 from __future__ import annotations
 
+import random
 import argparse
 import logging
 from pathlib import Path
@@ -53,6 +54,8 @@ from sklearn.neural_network import MLPClassifier
 log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
+
+seed = random.randrange(1, 100, step = 1)
 
 # Expected column order – matches the header that ships with *train.csv* [2].
 _EXPECTED_COLUMNS = [
@@ -224,7 +227,7 @@ def _split_dataset(
         y,
         test_size=0.20,
         stratify=y,
-        random_state=42,
+        random_state=seed,
     )
 
 
@@ -254,7 +257,7 @@ def _build_preprocessor() -> ColumnTransformer:
 
 def _baseline_model(X_train: pd.DataFrame, y_train: pd.Series, X_test: pd.DataFrame, y_test: pd.Series) -> str:
     """ trains a DummyClassifier baseline and evaluates its accuracy by using the most frequent class """
-    baseline = DummyClassifier(strategy="most_frequent", random_state=42)
+    baseline = DummyClassifier(strategy="most_frequent", random_state=seed)
     baseline.fit(X_train, y_train)
     baseline_acc = baseline.score(X_test, y_test)
     return(f"Dummy Classifier Test Accuracy (Most Frequent Class): {baseline_acc:.4f}\n")
@@ -269,7 +272,7 @@ def _build_model_candidates() -> Dict[str, Tuple[Pipeline, Dict[str, list[object
             Pipeline([
                 ("preprocess", preproc),
                 ("classifier", LogisticRegression(max_iter=5_000,
-                                                random_state=42)),
+                                                random_state=seed)),
             ]),
             {
                 "classifier__C": [0.01, 0.1, 1.0, 10.0, 100.0],
@@ -280,7 +283,7 @@ def _build_model_candidates() -> Dict[str, Tuple[Pipeline, Dict[str, list[object
             Pipeline([
                 ("preprocess", preproc),
                 ("classifier", RandomForestClassifier(
-                    n_jobs=-1, random_state=42)),
+                    n_jobs=-1, random_state=seed)),
             ]),
             {
                 "classifier__n_estimators": [200, 400],
@@ -292,7 +295,7 @@ def _build_model_candidates() -> Dict[str, Tuple[Pipeline, Dict[str, list[object
         "gradient_boosting": (
             Pipeline([
                 ("preprocess", preproc),
-                ("classifier", GradientBoostingClassifier(random_state=42)),
+                ("classifier", GradientBoostingClassifier(random_state=seed)),
             ]),
             {
                 "classifier__learning_rate": [0.05, 0.1],
@@ -304,7 +307,7 @@ def _build_model_candidates() -> Dict[str, Tuple[Pipeline, Dict[str, list[object
         "svm": (
             Pipeline([
                 ("preprocess", preproc),
-                ("classifier", SVC(random_state=42)),
+                ("classifier", SVC(random_state=seed)),
             ]),
             {
                 "classifier__C": [0.1, 1.0, 10.0],
@@ -317,7 +320,7 @@ def _build_model_candidates() -> Dict[str, Tuple[Pipeline, Dict[str, list[object
             Pipeline([
                 ("preprocess", preproc),
                 ("classifier", MLPClassifier(
-                    random_state=42,
+                    random_state=seed,
                     early_stopping=True,   # stop when validation score stops improving
                 )),
             ]),
@@ -363,7 +366,7 @@ def _tune_models(
     cv = StratifiedGroupKFold(
         n_splits=5,
         shuffle=True,
-        random_state=42,
+        random_state=seed,
     )  # ← replaces the plain StratifiedKFold used before
 
     best_by_name: Dict[str, Tuple[Pipeline, float]] = {}
