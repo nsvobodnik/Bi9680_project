@@ -37,6 +37,7 @@ from sklearn.metrics import (
 from sklearn.model_selection import (
     GridSearchCV,
     StratifiedKFold,
+    StratifiedGroupKFold,
     train_test_split,
     GroupKFold,
     cross_val_score
@@ -329,13 +330,34 @@ def _tune_models(
     candidates: Dict[str, Tuple[Pipeline, Dict[str, list[object]]]],
     X_train: pd.DataFrame,
     y_train: pd.Series,
+    groups: pd.Series,
 ) -> Dict[str, Tuple[Pipeline, float]]:
-    """Run GridSearchCV for every candidate and return the best estimator + CV accuracy."""
-    cv = StratifiedKFold(n_splits=5, shuffle=False)  # task‑specified settings
+    """
+    Run GridSearchCV for every candidate using a **group‑aware** CV splitter
+    (StratifiedGroupKFold).  All models are therefore tuned on identical
+    protein‑wise folds, preventing information leakage across mutations of the
+    same protein.
+
+    Args:
+        candidates: Mapping name → (pipeline, param_grid).
+        X_train: Feature matrix of the training split.
+        y_train: Target vector of the training split.
+        groups: Series that identifies the protein for each row
+                (e.g. ``df["uniprot"]``).
+
+    Returns:
+        Dictionary name → (best_estimator, best_cv_accuracy).
+    """
+    # 5‑fold, stratified by the label, but keep all rows of a protein together.
+    cv = StratifiedGroupKFold(
+        n_splits=5, shuffle=True, random_state=42
+    )  # ← replaces the plain StratifiedKFold used before [2]
+
     best_by_name: Dict[str, Tuple[Pipeline, float]] = {}
 
     for name, (pipeline, grid) in candidates.items():
         log.info("Tuning %s …", name)
+
         search = GridSearchCV(
             estimator=pipeline,
             param_grid=grid,
@@ -343,14 +365,21 @@ def _tune_models(
             cv=cv,
             n_jobs=-1,
         )
-        search.fit(X_train, y_train)
-        best_by_name[name] = (search.best_estimator_, float(search.best_score_))
+        # ``groups`` is forwarded so the CV splitter can enforce the protein
+        # boundaries.
+        search.fit(X_train, y_train, groups=groups)
+
+        best_by_name[name] = (
+            search.best_estimator_,
+            float(search.best_score_),
+        )
         log.info(
             "%s – best CV accuracy: %.4f (params: %s)",
             name,
             search.best_score_,
             search.best_params_,
         )
+
     return best_by_name
 
 
@@ -502,7 +531,8 @@ def main(argv: list[str] | None = None) -> None:
     log.info(baseline_output)
 
     candidates = _build_model_candidates()
-    tuned = _tune_models(candidates, X_train, y_train)
+    group_series = df.loc[X_train.index, "uniprot"]  # keep the same order as X_train
+    tuned = _tune_models(candidates, X_train, y_train, groups=group_series)
 
     # -----------------------------------------------------------------------
     # 6️⃣  Select the best model (highest CV accuracy)
