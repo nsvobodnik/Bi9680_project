@@ -34,6 +34,11 @@ from sklearn.metrics import (
     f1_score,
     precision_score,
     recall_score,
+    roc_curve,
+    roc_auc_score,
+    precision_recall_curve,
+    matthews_corrcoef,
+    classification_report,
 )
 from sklearn.model_selection import (
     GridSearchCV,
@@ -443,12 +448,14 @@ def _evaluate_split(
     prec = precision_score(y, preds, pos_label=1, zero_division=0)
     rec = recall_score(y, preds, pos_label=1, zero_division=0)
     f1 = f1_score(y, preds, pos_label=1, zero_division=0)
+    mcc = matthews_corrcoef(y, preds)
 
     return {
         "accuracy": acc,
         "precision (malignant)": prec,
         "recall (malignant)": rec,
         "f1 (malignant)": f1,
+        "mcc": mcc,
     }
 
 
@@ -495,6 +502,76 @@ def _print_confusion_matrices(
         print(f"{'':<20}{'pred Oncogenic':>16}{'pred Benign':>13}")
         print(f"{'actual Oncogenic':<20}{cm[0, 0]:>16}{cm[0, 1]:>13}")
         print(f"{'actual Benign':<20}{cm[1, 0]:>16}{cm[1, 1]:>13}")
+
+
+def _plot_confusion_matrix(name: str, estimator: BaseEstimator, X_test: pd.DataFrame,
+                           y_test: pd.Series, out_path: Path) -> None:
+    """Save a heatmap of the test-set confusion matrix (rows = true, columns = predicted)."""
+    labels = ["Oncogenic", "Benign"]
+    cm = confusion_matrix(y_test, estimator.predict(X_test), labels=[0, 1])
+    plt.figure(figsize=(5, 4))
+    sns.heatmap(cm, annot=True, fmt="d", cmap="Blues",
+                xticklabels=labels, yticklabels=labels)
+    plt.title(f"Confusion matrix (test set) – {name}")
+    plt.xlabel("Predicted label")
+    plt.ylabel("True label")
+    plt.tight_layout()
+    plt.savefig(out_path, dpi=150)
+    plt.close()
+    log.info("Confusion-matrix plot saved to %s", out_path)
+
+def _plot_roc_and_pr(
+    name: str,
+    estimator: BaseEstimator,
+    X_test: pd.DataFrame,
+    y_test: pd.Series,
+    out_path: Path,
+) -> None:
+    """Plot ROC and precision-recall curves for the positive class (Oncogenic = 1)."""
+    if hasattr(estimator, "predict_proba"):
+        scores = estimator.predict_proba(X_test)[:, 1]  # probability of class 1 (Oncogenic)
+    else:
+        scores = estimator.decision_function(X_test)
+
+    fpr, tpr, _ = roc_curve(y_test, scores, pos_label=1)
+    auc = roc_auc_score(y_test, scores)
+    precision, recall, _ = precision_recall_curve(y_test, scores, pos_label=1)
+
+    fig, (ax_roc, ax_pr) = plt.subplots(1, 2, figsize=(12, 5))
+    ax_roc.plot(fpr, tpr, lw=2, label=f"AUC = {auc:.3f}")
+    ax_roc.plot([0, 1], [0, 1], "--", color="gray")
+    ax_roc.set(
+        xlabel="False positive rate",
+        ylabel="True positive rate",
+        title=f"ROC curve – {name}",
+    )
+    ax_roc.legend(loc="lower right")
+
+    ax_pr.plot(recall, precision, lw=2)
+    ax_pr.set(xlabel="Recall", ylabel="Precision", title=f"Precision-recall – {name}")
+
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+    log.info("ROC / PR plot saved to %s (AUC = %.4f)", out_path, auc)
+
+def _print_classification_report(
+    estimator: BaseEstimator,
+    X_train: pd.DataFrame,
+    y_train: pd.Series,
+    X_test: pd.DataFrame,
+    y_test: pd.Series,
+) -> None:
+    """Print detailed scikit-learn classification reports for train and test sets."""
+    target_names = ["Benign (0)", "Oncogenic (1)"]
+    
+    print("\n--- Classification Report: Train Set ---")
+    train_preds = estimator.predict(X_train)
+    print(classification_report(y_train, train_preds, target_names=target_names, digits=4))
+
+    print("\n--- Classification Report: Test Set ---")
+    test_preds = estimator.predict(X_test)
+    print(classification_report(y_test, test_preds, target_names=target_names, digits=4))
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -581,10 +658,13 @@ def main(argv: list[str] | None = None) -> None:
     _print_confusion_matrices(
         best_estimator, X_train, y_train, X_test, y_test,
     )
+    _plot_confusion_matrix(best_name, best_estimator, X_test, y_test, out_dir / "confusion_matrix.png")
+    _plot_roc_and_pr(best_name, best_estimator, X_test, y_test, out_dir / "roc_pr.png")
 
     # -----------------------------------------------------------------------
     # 9️⃣  Plot CV accuracies for all models
     _plot_cv_accuracies(tuned, out_dir / "cv_accuracies.png")
+    _print_classification_report(best_estimator, X_train, y_train, X_test, y_test)
 
 
 if __name__ == "__main__":
